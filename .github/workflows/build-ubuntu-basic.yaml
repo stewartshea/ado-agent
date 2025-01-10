@@ -31,4 +31,4 @@ jobs:
 
     - name: Push Docker Image
       run: |
-        docker push ghcr.io/${{ github.repository }}$IMAGE:latest
+        docker push ghcr.io/${{ github.repository }}-$IMAGE:latest
