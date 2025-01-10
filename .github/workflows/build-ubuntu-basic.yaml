@@ -27,7 +27,7 @@ jobs:
 
     - name: Build Docker Image
       run: |
-        docker build -t ghcr.io/${{ github.repository }}-$IMAGE:latest $DOCKERFILE
+        docker build -t ghcr.io/${{ github.repository }}-$IMAGE:latest . -f $DOCKERFILE
 
     - name: Push Docker Image
       run: |
