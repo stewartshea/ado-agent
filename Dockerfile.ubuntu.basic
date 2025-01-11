@@ -8,7 +8,7 @@ RUN apt install -y curl git jq libicu70
 
 WORKDIR /azp/
 
-COPY ./start.sh ./
+COPY ./start-basic.sh ./start.sh
 RUN chmod +x ./start.sh
 
 # Create agent user and set up home directory

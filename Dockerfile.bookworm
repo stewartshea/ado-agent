@@ -276,6 +276,8 @@ ENV BUILDKIT_HOST=unix:///run/user/0/buildkit/buildkitd.sock
 
 # Install Azure Pipelines Agent startup script
 WORKDIR ${AZP_HOME}
-COPY start.sh .
+COPY start-bookworm.sh ./start.sh
+RUN chmod +x ./start.sh
+
 # Run as exec form, so that it can receive signals from Tini
 CMD ["bash", "start.sh"]
