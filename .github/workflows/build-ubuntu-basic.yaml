@@ -16,6 +16,8 @@ jobs:
         image:
           - name: "ubuntu-basic"
             dockerfile: "Dockerfile.ubuntu.basic"
+          - name: "bookworm"
+            dockerfile: "Dockerfile.bookworm"
 
     steps:
       - name: Checkout Repository

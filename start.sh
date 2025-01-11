@@ -1,94 +1,205 @@
 #!/bin/bash
 set -e
 
-if [ -z "${AZP_URL}" ]; then
-  echo 1>&2 "error: missing AZP_URL environment variable"
+# Start the Azure DevOps agent in a Windows container
+#
+# Agent is always registered. It is removed from the server only when the agent is not a template job. After 60 secs, it tries to shut down the agent gracefully, waiting for the current job to finish, if any.
+#
+# Environment variables:
+# - AZP_AGENT_NAME: Agent name (default: hostname)
+# - AZP_CUSTOM_CERT_PEM: Custom SSL certificates directory (default: empty)
+# - AZP_POOL: Agent pool name
+# - AZP_TEMPLATE_JOB: Template job flag (default: 0)
+# - AZP_TOKEN: Personal access token
+# - AZP_URL: Server URL
+# - AZP_WORK: Work directory
+
+##
+# Misc functions
+##
+
+write_header() {
+  lightcyan='\033[1;36m'
+  nocolor='\033[0m'
+  echo -e "${lightcyan}➡️ $1${nocolor}"
+}
+
+write_warning() {
+  yellow='\033[1;33m'
+  nocolor='\033[0m'
+  echo -e "${yellow}⚠️ $1${nocolor}"
+}
+
+raise_error() {
+  red='\033[1;31m'
+  nocolor='\033[0m'
+  echo 1>&2 -e "${red}❌ $1${nocolor}"
+}
+
+##
+# Argument parsing
+##
+
+if [ -z "$AZP_URL" ]; then
+  raise_error "Missing AZP_URL environment variable"
   exit 1
 fi
 
-if [ -z "${AZP_TOKEN_FILE}" ]; then
-  if [ -z "${AZP_TOKEN}" ]; then
-    echo 1>&2 "error: missing AZP_TOKEN environment variable"
-    exit 1
-  fi
-
-  AZP_TOKEN_FILE="/azp/.token"
-  echo -n "${AZP_TOKEN}" > "${AZP_TOKEN_FILE}"
+if [ -z "$AZP_TOKEN" ]; then
+  raise_error "Missing AZP_TOKEN environment variable"
+  exit 1
 fi
 
-unset AZP_TOKEN
-
-if [ -n "${AZP_WORK}" ]; then
-  mkdir -p "${AZP_WORK}"
+if [ -z "$AZP_POOL" ]; then
+  raise_error "Missing AZP_POOL environment variable"
+  exit 1
 fi
 
-cleanup() {
-  trap "" EXIT
+# If name is not set, use the hostname
+if [ -z "$AZP_AGENT_NAME" ]; then
+  write_warning "Missing AZP_AGENT_NAME environment variable, using hostname"
+  AZP_AGENT_NAME=$(hostname)
+fi
 
-  if [ -e ./config.sh ]; then
-    print_header "Cleanup. Removing Azure Pipelines agent..."
+if [ ! -w "$AZP_WORK" ]; then
+  write_warning "Work dir AZP_WORK (${AZP_WORK}) does not exist, creating it, but reliability is not guaranteed"
+  mkdir -p "$AZP_WORK"
+fi
 
-    # If the agent has some running jobs, the configuration removal process will fail.
-    # So, give it some time to finish the job.
-    while true; do
-      ./config.sh remove --unattended --auth "PAT" --token $(cat "${AZP_TOKEN_FILE}") && break
+if [ "$AZP_TEMPLATE_JOB" == "1" ]; then
+  write_warning "Template job enabled, agent cannot be used for running jobs"
+  is_template_job="true"
+  AZP_AGENT_NAME="${AZP_AGENT_NAME}-template"
+fi
 
-      echo "Retrying in 30 seconds..."
-      sleep 30
+write_header "Running agent $AZP_AGENT_NAME in pool $AZP_POOL"
+
+##
+# Cleanup function
+##
+
+unregister() {
+  write_header "Removing agent"
+
+  # If the agent has some running jobs, the configuration removal process will fail ; so, give it some time to finish the job
+  while true; do
+    # If the agent is removed successfully, exit the loop
+    bash config.sh remove \
+        --auth PAT \
+        --token "$AZP_TOKEN" \
+        --unattended \
+      && break
+
+    echo "A job is still running, waiting 15 seconds before retrying the removal"
+    sleep 15
+  done
+}
+
+##
+# Custom SSL certificates
+##
+
+write_header "Adding custom SSL certificates"
+
+if [ -d "$AZP_CUSTOM_CERT_PEM" ] && [ "$(ls -A $AZP_CUSTOM_CERT_PEM)" ]; then
+  echo "Searching for *.crt in $AZP_CUSTOM_CERT_PEM"
+
+  # Debian-based systems
+  if [ -s /etc/debian_version ]; then
+    cert_path="/usr/local/share/ca-certificates"
+    mkdir -p $cert_path
+
+    # Copy certificates to the certificate path
+    cp $AZP_CUSTOM_CERT_PEM/*.crt $cert_path
+
+    # Display certificates information
+    for cert_file in $AZP_CUSTOM_CERT_PEM/*.crt; do
+      echo "Certificate $(basename $cert_file)"
+      openssl x509 -inform PEM -in $cert_file -noout -issuer -subject -dates
     done
+
+    echo "Updating certificates keychain"
+    update-ca-certificates
   fi
-}
 
-print_header() {
-  lightcyan="\033[1;36m"
-  nocolor="\033[0m"
-  echo -e "\n${lightcyan}$1${nocolor}\n"
-}
+  # RHEL-based systems
+  if [ -s /etc/redhat-release ]; then
+    cert_path="/etc/ca-certificates/trust-source/anchors"
+    mkdir -p $cert_path
 
-# Let the agent ignore the token env variables
-export VSO_AGENT_IGNORE="AZP_TOKEN,AZP_TOKEN_FILE"
+    # Copy certificates to the certificate path
+    cp $AZP_CUSTOM_CERT_PEM/*.crt $cert_path
 
-print_header "1. Determining matching Azure Pipelines agent..."
+    # Display certificates information
+    for cert_file in $AZP_CUSTOM_CERT_PEM/*.crt; do
+      echo "Certificate $(basename $cert_file)"
+      openssl x509 -inform PEM -in $cert_file -noout -issuer -subject -dates
+    done
 
-AZP_AGENT_PACKAGES=$(curl -LsS \
-    -u user:$(cat "${AZP_TOKEN_FILE}") \
-    -H "Accept:application/json" \
-    "${AZP_URL}/_apis/distributedtask/packages/agent?platform=${TARGETARCH}&top=1")
-
-AZP_AGENT_PACKAGE_LATEST_URL=$(echo "${AZP_AGENT_PACKAGES}" | jq -r ".value[0].downloadUrl")
-
-if [ -z "${AZP_AGENT_PACKAGE_LATEST_URL}" -o "${AZP_AGENT_PACKAGE_LATEST_URL}" == "null" ]; then
-  echo 1>&2 "error: could not determine a matching Azure Pipelines agent"
-  echo 1>&2 "check that account "${AZP_URL}" is correct and the token is valid for that account"
-  exit 1
+    echo "Updating certificates keychain"
+    update-ca-trust extract
+  fi
+else
+  echo "No custom SSL certificate provided"
 fi
 
-print_header "2. Downloading and extracting Azure Pipelines agent..."
+##
+# Agent configuration
+##
 
-curl -LsS "${AZP_AGENT_PACKAGE_LATEST_URL}" | tar -xz & wait $!
+write_header "Configuring agent"
 
-source ./env.sh
+cd $(dirname "$0")
 
-trap "cleanup; exit 0" EXIT
-trap "cleanup; exit 130" INT
-trap "cleanup; exit 143" TERM
-
-print_header "3. Configuring Azure Pipelines agent..."
-
-./config.sh --unattended \
-  --agent "${AZP_AGENT_NAME:-$(hostname)}" \
-  --url "${AZP_URL}" \
-  --auth "PAT" \
-  --token $(cat "${AZP_TOKEN_FILE}") \
-  --pool "${AZP_POOL:-Default}" \
-  --work "${AZP_WORK:-_work}" \
+bash config.sh \
+  --acceptTeeEula \
+  --agent "$AZP_AGENT_NAME" \
+  --auth PAT \
+  --pool "$AZP_POOL" \
   --replace \
-  --acceptTeeEula & wait $!
+  --token "$AZP_TOKEN" \
+  --unattended \
+  --url "$AZP_URL" \
+  --work "$AZP_WORK" &
 
-print_header "4. Running Azure Pipelines agent..."
+# Fake the exit code of the agent for the prevent Kubernetes to detect the pod as failed (this is intended)
+# See: https://stackoverflow.com/a/62183992/12732154
+wait $!
 
-chmod +x ./run.sh
+##
+# Agent execution
+##
 
-# To be aware of TERM and INT signals call ./run.sh
+write_header "Running agent"
+
 # Running it with the --once flag at the end will shut down the agent after the build is executed
-./run.sh "$@" & wait $!
+if [ "$is_template_job" == "true" ]; then
+  echo "Agent will be stopped after 1 min"
+  # Run the agent for a minute
+  timeout --preserve-status 1m bash run-docker.sh "$@" --once &
+elif [ "$AZP_AGENT_ONETIME" == "true" ]; then
+  # Unregister on success
+  trap 'unregister; exit 0' EXIT
+  # Unregister on Ctrl+C
+  trap 'unregister; exit 130' INT
+  # Unregister on SIGTERM
+  trap 'unregister; exit 143' TERM
+  # Run the countdown for fast-clean if no job is using the agent after a delay
+  sleep 60 && unregister &
+  # Run the agent
+  bash run-docker.sh "$@" --once &
+else
+  bash run-docker.sh "$@" &
+fi
+
+# Fake the exit code of the agent for the prevent Kubernetes to detect the pod as failed (this is intended)
+# See: https://stackoverflow.com/a/62183992/12732154
+wait $!
+
+##
+# Diagnostics
+##
+
+write_header "Printing agent diag logs"
+
+cat $AGENT_DIAGLOGPATH/*.log
