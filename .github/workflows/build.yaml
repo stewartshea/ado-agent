@@ -6,6 +6,7 @@ on:
       - main  # Trigger on pushes to the main branch
   workflow_dispatch:  # Allow manual triggering
 
+# ref: https://github.com/clemlesne/blue-agent/blob/main/.github/workflows/pipeline.yaml
 env:
   CONTAINER_NAME: ${{ github.repository }}
   CONTAINER_REGISTRY_GHCR: ghcr.io
@@ -72,8 +73,11 @@ jobs:
         image:
           - name: "ubuntu-basic"
             dockerfile: "Dockerfile.ubuntu.basic"
+            arch: linux/amd64
           - name: "bookworm"
             dockerfile: "Dockerfile.bookworm"
+            arch: linux/amd64
+
 
     steps:
       - name: Checkout Repository
@@ -86,10 +90,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Docker Image
-        run: |
-          docker build -t ghcr.io/stewartshea/ado-agent:${{ matrix.image.name }}-latest . -f ${{ matrix.image.dockerfile }}
+      # - name: Build Docker Image
+      #   run: |
+      #     docker build -t ghcr.io/stewartshea/ado-agent:${{ matrix.image.name }}-latest . -f ${{ matrix.image.dockerfile }}
 
-      - name: Push Docker Image
-        run: |
-          docker push ghcr.io/stewartshea/ado-agent:${{ matrix.image.name }}-latest
+      # - name: Push Docker Image
+      #   run: |
+      #     docker push ghcr.io/stewartshea/ado-agent:${{ matrix.image.name }}-latest
+      - name: Build & push container
+        uses: docker/build-push-action@v6.10.0
+        with:
+          build-args: |
+            AWS_CLI_VERSION=${{ env.AWS_CLI_VERSION }}
+            AZP_AGENT_VERSION=${{ env.AZP_AGENT_VERSION }}
+            AZURE_CLI_VERSION=${{ env.AZURE_CLI_VERSION }}
+            BUILDKIT_VERSION=${{ env.BUILDKIT_VERSION }}
+            GCLOUD_CLI_VERSION=${{ env.GCLOUD_CLI_VERSION }}
+            GO_VERSION=${{ env.GO_VERSION }}
+            POWERSHELL_VERSION=${{ env.POWERSHELL_VERSION }}
+            PYTHON_VERSION_MAJOR_MINOR=${{ env.PYTHON_VERSION_MAJOR_MINOR }}
+            PYTHON_VERSION_PATCH=${{ env.PYTHON_VERSION_PATCH }}
+            ROOTLESSKIT_VERSION=${{ env.ROOTLESSKIT_VERSION }}
+            TINI_VERSION=${{ env.TINI_VERSION }}
+            YQ_VERSION=${{ env.YQ_VERSION }}
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          outputs: type=registry,oci-mediatypes=true,compression=estargz,compression-level=9,force-compression=true
+          platforms: ${{ matrix.image.arch }}
+          tags: ${{ matrix.image.name }}-latest
